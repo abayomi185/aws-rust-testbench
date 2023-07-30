@@ -9,4 +9,7 @@ mod tests {
 pub mod foo {}
 
 // use serde::{Deserialize, Serialize};
-mod store;
+pub mod store {
+    pub mod db;
+    pub mod s3;
+}

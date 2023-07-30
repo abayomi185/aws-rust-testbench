@@ -4,6 +4,8 @@
 
 use tracing::info;
 
+use aws_rust_testbench::store::s3::get_object;
+
 use axum::{
     extract::Path,
     response::Json,
@@ -11,6 +13,12 @@ use axum::{
     Router,
 };
 use serde_json::{json, Value};
+
+use bb8::Pool;
+use diesel_async::{
+    pooled_connection::AsyncDieselConnectionManager, AsyncMysqlConnection, RunQueryDsl,
+};
+// use lambda_http::{http::StatusCode, run, Error};
 
 async fn root() -> Json<Value> {
     info!("root");
@@ -33,6 +41,9 @@ async fn post_foo_name(Path(name): Path<String>) -> Json<Value> {
 
 #[tokio::main]
 async fn main() -> Result<(), lambda_http::Error> {
+    // Load environment variable from .env file
+    dotenvy::dotenv()?;
+
     // required to enable CloudWatch error logging by the runtime
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
@@ -42,10 +53,19 @@ async fn main() -> Result<(), lambda_http::Error> {
         .without_time()
         .init();
 
+    // Set up the database connection
+    let db_url = std::env::var("DATABASE_URL").expect("missing DATABASE_URL environment variable");
+    let config = AsyncDieselConnectionManager::<AsyncMysqlConnection>::new(db_url);
+    let connection = Pool::builder()
+        .build(config)
+        .await
+        .expect("unable to establish the database connection");
+
     let app = Router::new()
         .route("/", get(root))
         .route("/foo", get(get_foo).post(post_foo))
-        .route("/foo/:name", post(post_foo_name));
+        .route("/foo/:name", post(post_foo_name))
+        .with_state(connection);
 
     #[cfg(debug_assertions)]
     {

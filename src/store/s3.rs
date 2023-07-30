@@ -1,1 +1,3 @@
-pub mod s3 {}
+pub fn get_object() {
+    println!("Gotten object")
+}
