@@ -13,3 +13,6 @@ pub mod store {
     pub mod db;
     pub mod s3;
 }
+
+pub mod actions;
+pub mod auth;

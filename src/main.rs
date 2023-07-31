@@ -1,10 +1,11 @@
 #![forbid(unsafe_code)]
 
-// use aws_rust_testbench::foo;
+// use std::path::PathBuf;
 
 use tracing::info;
 
 use aws_rust_testbench::store::s3::get_object;
+use aws_rust_testbench::{actions, auth};
 
 use axum::{
     extract::Path,
@@ -12,6 +13,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+// use axum_server::tls_rustls::RustlsConfig;
 use serde_json::{json, Value};
 
 use bb8::Pool;
@@ -61,16 +63,41 @@ async fn main() -> Result<(), lambda_http::Error> {
         .await
         .expect("unable to establish the database connection");
 
-    let app = Router::new()
+    let dummy_routes = Router::new()
         .route("/", get(root))
         .route("/foo", get(get_foo).post(post_foo))
         .route("/foo/:name", post(post_foo_name))
         .with_state(connection);
 
+    let auth_routes = Router::new()
+        .route("/login", get(auth::login))
+        .route("/signup", get(auth::signup));
+    let actions_routes = Router::new().route("/", get(actions::do_something));
+
+    let api_routes = Router::new()
+        .nest("/dummy", dummy_routes)
+        .nest("/auth", auth_routes)
+        .nest("/actions", actions_routes);
+
+    let app = Router::new().nest("/api/v1", api_routes);
+
+    // configure certificate and private key used by https
+    // let config = RustlsConfig::from_pem_file(
+    //     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    //         .join("dummy_certs")
+    //         .join("cert.pem"),
+    //     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    //         .join("dummy_certs")
+    //         .join("key.pem"),
+    // )
+    // .await
+    // .unwrap();
+
     #[cfg(debug_assertions)]
     {
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 3000));
-        axum::Server::bind(&addr)
+        axum::Server::bind(&addr) // Without https
+            // axum_server::bind_rustls(addr, config) // With https
             .serve(app.into_make_service())
             .await
             .unwrap();
