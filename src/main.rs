@@ -2,19 +2,16 @@
 
 // use std::path::PathBuf;
 
-use tracing::info;
-
-use aws_rust_testbench::store::s3::get_object;
-use aws_rust_testbench::{actions, auth};
+use aws_rust_testbench::{actions, auth, dummy};
 
 use axum::{
-    extract::Path,
-    response::Json,
+    extract::{MatchedPath, OriginalUri, Path},
+    http::Request,
     routing::{get, post},
     Router,
 };
+use tower_http::trace::TraceLayer;
 // use axum_server::tls_rustls::RustlsConfig;
-use serde_json::{json, Value};
 
 use bb8::Pool;
 use diesel_async::{
@@ -22,38 +19,46 @@ use diesel_async::{
 };
 // use lambda_http::{http::StatusCode, run, Error};
 
-async fn root() -> Json<Value> {
-    info!("root");
-    Json(json!({ "msg": "I am GET /" }))
-}
-
-async fn get_foo() -> Json<Value> {
-    info!("get_foo");
-    Json(json!({ "msg": "I am GET /foo" }))
-}
-
-async fn post_foo() -> Json<Value> {
-    Json(json!({ "msg": "I am POST /foo" }))
-}
-
-async fn post_foo_name(Path(name): Path<String>) -> Json<Value> {
-    info!("get_foo");
-    Json(json!({ "msg": format!("I am POST /foo/:name, name={name}") }))
-}
-
 #[tokio::main]
 async fn main() -> Result<(), lambda_http::Error> {
-    // Load environment variable from .env file
-    dotenvy::dotenv()?;
+    #[cfg(debug_assertions)]
+    {
+        // Load environment variable from .env file
+        dotenvy::dotenv()?;
+    }
+
+    std::env::set_var("DATABASE_URL", "");
+    // let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
     // required to enable CloudWatch error logging by the runtime
     tracing_subscriber::fmt()
+        .with_ansi(false)
         .with_max_level(tracing::Level::INFO)
         // disable printing the name of the module in every log line.
         .with_target(false)
         // disabling time is handy because CloudWatch will add the ingestion time.
         .without_time()
+        .json()
         .init();
+
+    let trace_layer = TraceLayer::new_for_http()
+        .make_span_with(|request: &Request<_>| {
+            let path = if let Some(path) = request.extensions().get::<OriginalUri>() {
+                path.path().to_owned()
+            } else {
+                request.uri().path().to_owned()
+            };
+
+            tracing::info_span!(
+                "http_request",
+                method = ?request.method(),
+                path,
+                some_other_field = tracing::field::Empty,
+            )
+        })
+        .on_request(|_request: &Request<_>, _span: &tracing::Span| {
+            tracing::info!(message = "begin request!")
+        });
 
     // Set up the database connection
     let db_url = std::env::var("DATABASE_URL").expect("missing DATABASE_URL environment variable");
@@ -63,23 +68,26 @@ async fn main() -> Result<(), lambda_http::Error> {
         .await
         .expect("unable to establish the database connection");
 
+    // Define all routes
     let dummy_routes = Router::new()
-        .route("/", get(root))
-        .route("/foo", get(get_foo).post(post_foo))
-        .route("/foo/:name", post(post_foo_name))
+        .route("/", get(dummy::root))
+        .route("/foo", get(dummy::get_foo).post(dummy::post_foo))
+        .route("/foo/:name", post(dummy::post_foo_name))
         .with_state(connection);
 
     let auth_routes = Router::new()
         .route("/login", get(auth::login))
         .route("/signup", get(auth::signup));
+
     let actions_routes = Router::new().route("/", get(actions::do_something));
 
+    // Nest routes
     let api_routes = Router::new()
         .nest("/dummy", dummy_routes)
         .nest("/auth", auth_routes)
         .nest("/actions", actions_routes);
 
-    let app = Router::new().nest("/api/v1", api_routes);
+    let app = Router::new().nest("/api/v1", api_routes).layer(trace_layer);
 
     // configure certificate and private key used by https
     // let config = RustlsConfig::from_pem_file(
